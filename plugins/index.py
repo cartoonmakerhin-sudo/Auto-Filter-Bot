@@ -1,10 +1,10 @@
 import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
-from info import ADMINS, CHANNELS
-from database.ia_filterdb import save_file
+from info import ADMINS, CHANNELS # Make sure these imports are correct
+from database.ia_filterdb import save_file # Make sure this import is correct
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from utils import temp, get_readable_time
+from utils import temp, get_readable_time # Make sure these imports are correct
 import time
 
 lock = asyncio.Lock()
@@ -17,8 +17,10 @@ async def index_files(bot, query):
         msg = query.message
         await msg.edit("<b>Indexing started...</b>")
         try:
+            # Try to convert chat ID to integer for numerical IDs
             chat = int(chat)
         except:
+            # Keep as string for usernames
             chat = chat
         await index_files_to_db(int(lst_msg_id), chat, msg, bot, int(skip))
     elif ident == "cancel":
@@ -41,6 +43,7 @@ async def send_for_index(bot, message):
             last_msg_id = int(msg_link[-1])
             chat_id = msg_link[-2]
             if chat_id.isnumeric():
+                # Convert public numerical ID to Pyrogram format
                 chat_id = int(("-100" + chat_id))
         except:
             await message.reply("Invalid message link!")
@@ -108,98 +111,80 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip):
     current = skip
 
     async with lock:
-        async for message in bot.iter_messages(
-            chat,
-            offset_id=lst_msg_id,
-            min_id=skip
-        ):
-            try:
+        try:
+            # The heart of the indexing process
+            async for message in bot.iter_messages(chat, lst_msg_id, offset=skip): # Changed 'skip' to 'offset'
+                time_taken = get_readable_time(time.time() - start_time)
                 if temp.CANCEL:
                     temp.CANCEL = False
-                    time_taken = get_readable_time(time.time() - start_time)
                     await msg.edit(
-                        f"Successfully Cancelled!\nCompleted in {time_taken}\n\n"
-                        f"Saved <code>{total_files}</code> files\n"
-                        f"Duplicate: <code>{duplicate}</code>\n"
-                        f"Deleted: <code>{deleted}</code>\n"
-                        f"Non-Media: <code>{no_media + unsupported}</code>\n"
-                        f"Errors: <code>{errors}</code>"
+                        f"Successfully Cancelled!\nCompleted in {time_taken}\n\nSaved <code>{total_files}</code> files to Database!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>"
                     )
                     return
-
                 current += 1
-
-                # progress update
+                
+                # Update status every 100 messages
                 if current % 100 == 0:
-                    btn = [[
-                        InlineKeyboardButton(
-                            "CANCEL",
-                            callback_data=f"index#cancel#{chat}#{lst_msg_id}#{skip}"
-                        )
-                    ]]
+                    btn = [
+                        [
+                            InlineKeyboardButton(
+                                "CANCEL",
+                                callback_data=f"index#cancel#{chat}#{lst_msg_id}#{skip}",
+                            )
+                        ]
+                    ]
                     await msg.edit_text(
-                        text=(
-                            f"Total checked: <code>{current}</code>\n"
-                            f"Saved: <code>{total_files}</code>\n"
-                            f"Duplicate: <code>{duplicate}</code>\n"
-                            f"Deleted: <code>{deleted}</code>\n"
-                            f"Non-Media: <code>{no_media + unsupported}</code>\n"
-                            f"Errors: <code>{errors}</code>"
-                        ),
+                        text=f"Total messages received: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>",
                         reply_markup=InlineKeyboardMarkup(btn),
                     )
-                    await asyncio.sleep(1)
-
-                # deleted / inaccessible message
-                if not message or message.empty:
+                    # Add a small delay to avoid FloodWait from too many edits
+                    await asyncio.sleep(2) 
+                    
+                # Filtering Logic
+                if message.empty:
                     deleted += 1
                     continue
-
-                if not message.media:
+                elif not message.media:
                     no_media += 1
                     continue
-
-                if message.media not in (
+                elif message.media not in [
                     enums.MessageMediaType.VIDEO,
-                    enums.MessageMediaType.DOCUMENT
-                ):
+                    enums.MessageMediaType.DOCUMENT,
+                ]:
                     unsupported += 1
                     continue
-
+                
+                # Get the media object (Video or Document)
                 media = getattr(message, message.media.value, None)
-                if not media or not media.mime_type:
+                if not media:
                     unsupported += 1
                     continue
-
-                if media.mime_type not in ("video/mp4", "video/x-matroska"):
+                
+                # Strict MIME type check for videos
+                elif media.mime_type not in ["video/mp4", "video/x-matroska"]:
                     unsupported += 1
                     continue
-
+                
+                # Save the file to the database
                 media.caption = message.caption
                 sts = await save_file(media)
-
+                
                 if sts == "suc":
                     total_files += 1
                 elif sts == "dup":
                     duplicate += 1
-                else:
+                elif sts == "err":
                     errors += 1
-
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-
-            except Exception:
-                # THIS IS THE MOST IMPORTANT FIX
-                errors += 1
-                continue
-
-        time_taken = get_readable_time(time.time() - start_time)
-        await msg.edit(
-            f"Index Completed ✅\n\n"
-            f"Saved: <code>{total_files}</code>\n"
-            f"Duplicate: <code>{duplicate}</code>\n"
-            f"Deleted: <code>{deleted}</code>\n"
-            f"Non-Media: <code>{no_media + unsupported}</code>\n"
-            f"Errors: <code>{errors}</code>\n\n"
-            f"Time Taken: {time_taken}"
-        )
+                    
+        except FloodWait as e:
+            # Handle Pyrogram FloodWait errors
+            await asyncio.sleep(e.x)
+        except Exception as e:
+            # Handle any other unexpected errors
+            await msg.reply(f"Index canceled due to Error - {e}")
+        else:
+            # Final success message
+            time_taken = get_readable_time(time.time() - start_time)
+            await msg.edit(
+                f"Succesfully saved <code>{total_files}</code> to Database!\nCompleted in {time_taken}\n\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nUnsupported Media: <code>{unsupported}</code>\nErrors Occurred: <code>{errors}</code>"
+            )
